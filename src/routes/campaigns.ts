@@ -69,7 +69,24 @@ export async function campaignRoutes(app: FastifyInstance) {
 
     let records: any[];
     try {
-      records = parse(csvText, { columns: true, skip_empty_lines: true, trim: true });
+      // Auto-detect headerless CSV: if first field of first row looks like a phone number,
+      // map columns by position (phone,fname,lname,email,...) instead of using header names
+      const firstLine = csvText.trim().split('\n')[0] ?? '';
+      const firstField = firstLine.split(',')[0].replace(/\D/g, '');
+      const isHeaderless = firstField.length >= 7; // phone digits, not a column name
+
+      if (isHeaderless) {
+        const raw = parse(csvText, { columns: false, skip_empty_lines: true, trim: true }) as string[][];
+        records = raw.map((row: string[]) => ({
+          phone_e164: row[0] ?? '',
+          fname: row[1] ?? '',
+          lname: row[2] ?? '',
+          email: row[3] ?? '',
+          country: row[7] ?? '',
+        }));
+      } else {
+        records = parse(csvText, { columns: true, skip_empty_lines: true, trim: true });
+      }
     } catch (err) {
       return reply.status(400).send({ error: 'Invalid CSV format' });
     }
