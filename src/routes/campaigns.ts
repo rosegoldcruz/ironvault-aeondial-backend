@@ -78,8 +78,9 @@ export async function campaignRoutes(app: FastifyInstance) {
     const skipped: string[] = [];
 
     for (const row of records) {
-      const rawPhone = row['Cellphone'] ?? row['phone'] ?? row['Phone'] ?? '';
-      const phone = normalizePhone(rawPhone);
+      // phone_e164 takes priority over other phone columns
+      const rawPhone = row['phone_e164'] ?? row['Cellphone'] ?? row['phone'] ?? row['Phone'] ?? '';
+      const phone = rawPhone.startsWith('+') ? rawPhone : normalizePhone(rawPhone);
 
       if (!phone) {
         skipped.push(rawPhone);
@@ -88,8 +89,8 @@ export async function campaignRoutes(app: FastifyInstance) {
 
       leads.push({
         campaign_id: campaignId,
-        first_name: row['First Name'] ?? row['first_name'] ?? null,
-        last_name: row['Last Name'] ?? row['last_name'] ?? null,
+        first_name: row['fname'] ?? row['First Name'] ?? row['first_name'] ?? null,
+        last_name: row['lname'] ?? row['Last Name'] ?? row['last_name'] ?? null,
         email: row['Email'] ?? row['email'] ?? null,
         phone,
         quality: row['quality'] ?? null,
@@ -98,6 +99,8 @@ export async function campaignRoutes(app: FastifyInstance) {
         state: row['State'] ?? row['state'] ?? null,
         country: row['Country'] ?? row['country'] ?? null,
         zip: row['Zip'] ?? row['zip'] ?? null,
+        timezone: row['timezone'] ?? null,
+        timezone_source: row['timezone_source'] ?? null,
         status: 'pending',
         attempts: 0,
       });
