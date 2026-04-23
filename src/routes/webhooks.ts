@@ -119,6 +119,13 @@ export async function telnyxWebhookRoutes(app: FastifyInstance) {
               .update({ status: 'lead_answered', lead_leg_id: callControlId })
               .eq('id', callId);
           }
+          try {
+            await telnyx.calls.actions.speak(callControlId, {
+              payload: 'Please hold for the next available representative.',
+              voice: 'female',
+              language: 'en-US',
+            });
+          } catch(e) { app.log.warn('[WEBHOOK] Speak failed: ' + e); }
         }
         break;
       }
@@ -379,9 +386,9 @@ async function dialLeadLeg(
       webhook_url: process.env.TELNYX_WEBHOOK_URL,
       answering_machine_detection: 'premium',
       answering_machine_detection_config: {
-        total_analysis_time_millis: 3500,
-        after_greeting_silence_millis: 800,
-        maximum_number_of_words: 5,
+        total_analysis_time_millis: 1500,
+        after_greeting_silence_millis: 400,
+        maximum_number_of_words: 3,
       },
       client_state: Buffer.from(JSON.stringify({
         leg_type: 'lead',
