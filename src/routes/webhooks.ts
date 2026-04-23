@@ -134,7 +134,7 @@ export async function telnyxWebhookRoutes(app: FastifyInstance) {
 
         if (!callId || !agentId) break;
 
-        const isHuman = result === 'human';
+        const isHuman = result === 'human' || result === 'not_sure';
 
         if (isHuman) {
           // Fetch agent leg control id to bridge against
