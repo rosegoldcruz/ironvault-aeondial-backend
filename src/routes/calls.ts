@@ -2,6 +2,16 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { hangupCall } from '../lib/telnyx.js';
+import Telnyx from 'telnyx';
+
+const telnyx = new (Telnyx as any)({ apiKey: process.env.TELNYX_API_KEY });
+
+function normalizePhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 10) return '+1' + digits;
+  if (digits.length === 11 && digits[0] === '1') return '+' + digits;
+  return '+' + digits;
+}
 
 const wrapUpSchema = z.object({
   disposition: z.enum([
@@ -180,6 +190,111 @@ export async function callRoutes(app: FastifyInstance) {
     await Promise.all(hangups);
 
     return reply.send({ success: true });
+  });
+
+  // POST /calls/manual-dial — agent initiates outbound call to a specific number
+  app.post('/manual-dial', { onRequest: [app.authenticate] } as any, async (req: any, reply) => {
+    const { agentId } = req.user;
+    const { phone: rawPhone, lead_id: existingLeadId } = req.body as { phone?: string; lead_id?: string };
+
+    if (!rawPhone && !existingLeadId) {
+      return reply.status(400).send({ error: 'phone or lead_id required' });
+    }
+
+    // Get agent SIP username
+    const { data: agent } = await supabase
+      .from('agents')
+      .select('telnyx_sip_username')
+      .eq('id', agentId)
+      .single();
+
+    if (!agent?.telnyx_sip_username) {
+      return reply.status(400).send({ error: 'Agent has no SIP credentials' });
+    }
+
+    // Resolve lead
+    let leadId = existingLeadId;
+    let leadPhone = rawPhone ? normalizePhone(rawPhone) : '';
+
+    if (!leadId && leadPhone) {
+      // Find existing lead or create a manual one
+      const { data: existing } = await supabase
+        .from('leads')
+        .select('id, phone')
+        .eq('phone', leadPhone)
+        .limit(1)
+        .single();
+
+      if (existing) {
+        leadId = existing.id;
+      } else {
+        const { data: created } = await supabase
+          .from('leads')
+          .insert({ phone: leadPhone, status: 'reserved', assigned_agent_id: agentId, first_name: 'Manual', last_name: 'Dial' })
+          .select('id')
+          .single();
+        leadId = created?.id;
+      }
+    }
+
+    if (!leadId) return reply.status(500).send({ error: 'Could not resolve lead' });
+
+    // Get lead phone if coming from lead_id
+    if (!leadPhone) {
+      const { data: lead } = await supabase.from('leads').select('phone').eq('id', leadId).single();
+      leadPhone = lead?.phone ?? '';
+    }
+
+    // Create call record
+    const { data: callRecord } = await supabase
+      .from('calls')
+      .insert({
+        agent_id: agentId,
+        lead_id: leadId,
+        status: 'created',
+        started_at: new Date().toISOString(),
+        notes: 'manual-dial',
+      })
+      .select('id')
+      .single();
+
+    if (!callRecord) return reply.status(500).send({ error: 'Failed to create call record' });
+
+    const callId = callRecord.id;
+    const sipDomain = process.env.AGENT_LEG_SIP_DOMAIN || 'aeondial.sip.telnyx.com';
+    const sipUsername = agent.telnyx_sip_username.trim().replace(/^sip:/, '').split('@')[0];
+    const agentSipUri = `sip:${sipUsername}@${sipDomain}`;
+
+    try {
+      const agentCallResponse = await telnyx.calls.dial({
+        connection_id: process.env.TELNYX_CONNECTION_ID,
+        to: agentSipUri,
+        from: process.env.TELNYX_OUTBOUND_NUMBER,
+        webhook_url: process.env.TELNYX_WEBHOOK_URL,
+        client_state: Buffer.from(JSON.stringify({
+          leg_type: 'agent',
+          call_id: callId,
+          agent_id: agentId,
+          lead_id: leadId,
+        })).toString('base64'),
+      });
+
+      await supabase.from('calls').update({
+        agent_leg_id: agentCallResponse.data.call_control_id,
+        status: 'agent_dialing',
+      }).eq('id', callId);
+
+      await supabase.from('agent_sessions').update({
+        state: 'RESERVED',
+        updated_at: new Date().toISOString(),
+      }).eq('agent_id', agentId);
+
+      app.log.info(`[MANUAL DIAL] Agent ${agentId} → ${leadPhone} | call: ${callId}`);
+      return reply.send({ success: true, call_id: callId, phone: leadPhone });
+    } catch (err: any) {
+      await supabase.from('calls').update({ status: 'failed', ended_at: new Date().toISOString() }).eq('id', callId);
+      return reply.status(500).send({ error: 'Dial failed: ' + err.message });
+    }
   });
 
   // GET /calls/history — recent calls for agent
