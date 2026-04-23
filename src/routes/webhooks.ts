@@ -101,6 +101,14 @@ export async function telnyxWebhookRoutes(app: FastifyInstance) {
 
           app.log.info(`[WEBHOOK] Agent leg answered | agent: ${agentId} | now dialing lead`);
 
+          try {
+            await telnyx.calls.actions.speak(callControlId, {
+              payload: 'Connecting you to a lead now. Please stand by.',
+              voice: 'female',
+              language: 'en-US',
+            });
+          } catch(e) { app.log.warn('[WEBHOOK] Agent speak failed: ' + e); }
+
           // NOW dial the lead leg
           if (callId && agentId && leadId) {
             await dialLeadLeg(app, { callId, agentId, leadId, agentCallControlId: callControlId });
@@ -119,13 +127,6 @@ export async function telnyxWebhookRoutes(app: FastifyInstance) {
               .update({ status: 'lead_answered', lead_leg_id: callControlId })
               .eq('id', callId);
           }
-          try {
-            await telnyx.calls.actions.speak(callControlId, {
-              payload: 'Please hold for the next available representative.',
-              voice: 'female',
-              language: 'en-US',
-            });
-          } catch(e) { app.log.warn('[WEBHOOK] Speak failed: ' + e); }
         }
         break;
       }
