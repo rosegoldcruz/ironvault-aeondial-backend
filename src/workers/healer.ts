@@ -59,6 +59,29 @@ async function heal() {
       console.log(`[HEALER] Released stuck agent ${a.agent_id}`);
     }
   }
+
+  // ── 3. Clear stale active_call_id on READY/REGISTERED sessions ───
+  const { data: staleSessions } = await supabase
+    .from('agent_sessions')
+    .select('agent_id, active_call_id')
+    .not('active_call_id', 'is', null)
+    .in('state', ['READY', 'REGISTERED']);
+
+  for (const session of staleSessions ?? []) {
+    const { data: call } = await supabase
+      .from('calls')
+      .select('status')
+      .eq('id', session.active_call_id)
+      .single();
+
+    if (call && ['completed', 'failed', 'voicemail', 'no_answer', 'aborted'].includes(call.status)) {
+      await supabase
+        .from('agent_sessions')
+        .update({ active_call_id: null, updated_at: now.toISOString() })
+        .eq('agent_id', session.agent_id);
+      console.log(`[HEALER] Cleared stale active_call_id for agent ${session.agent_id}`);
+    }
+  }
 }
 
 async function run() {
